@@ -4,6 +4,8 @@ import sys
 import uuid
 import time
 import json
+import asyncio
+import aiohttp
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 import requests
 from werkzeug.utils import secure_filename
@@ -152,8 +154,63 @@ def clean_text(text, options=None):
     
     return cleaned_text.strip()
 
+async def async_text_to_speech(session, text, output_path, voice="zh-CN-XiaoxiaoNeural", speed=1.0, api_url=None, api_key=None):
+    """异步调用TTS API转换文本为语音"""
+    # 使用传入的API信息，如果没有则使用默认值
+    if not api_url:
+        api_url = "http://127.0.0.1:5050/v1/audio/speech"
+    else:
+        # 确保URL格式正确
+        if not api_url.endswith('/v1/audio/speech'):
+            api_url = api_url.rstrip('/') + '/v1/audio/speech'
+    
+    if not api_key:
+        api_key = "b77cf8cf852f4080bb56a4adcfc6a685"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "tts-1",
+        "input": text,  # 直接发送原始文本，让API端处理清理
+        "voice": voice,
+        "speed": speed,
+        "cleaning_options": {
+            "remove_markdown": True,
+            "remove_emoji": True,
+            "remove_urls": True,
+            "remove_line_breaks": True,
+            "remove_citation_numbers": True
+        }
+    }
+    
+    try:
+        # 异步发送请求并获取响应
+        timeout = aiohttp.ClientTimeout(total=300)  # 5分钟超时
+        async with session.post(api_url, headers=headers, json=data, timeout=timeout) as response:
+            if response.status == 200:
+                # 异步读取响应内容
+                content = await response.read()
+                
+                # 保存音频文件
+                with open(output_path, 'wb') as f:
+                    f.write(content)
+                
+                return True
+            else:
+                print(f"TTS API返回错误状态码: {response.status} ({api_url})", file=sys.stderr)
+                return False
+                
+    except asyncio.TimeoutError:
+        print(f"TTS转换超时 ({api_url})", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"TTS转换失败 ({api_url}): {str(e)}", file=sys.stderr)
+        return False
+
 def text_to_speech(text, output_path, voice="zh-CN-XiaoxiaoNeural", speed=1.0, api_url=None, api_key=None):
-    """调用TTS API转换文本为语音"""
+    """同步版本的TTS调用（保持向后兼容）"""
     # 使用传入的API信息，如果没有则使用默认值
     if not api_url:
         api_url = "http://127.0.0.1:5050/v1/audio/speech"
@@ -269,7 +326,7 @@ def upload_files():
     
     # 启动后台处理任务
     import threading
-    thread = threading.Thread(target=process_files_with_load_balancing, args=(batch_id, batch_upload_dir, voice, speed, enabled_servers, concurrency))
+    thread = threading.Thread(target=run_async_processing, args=(batch_id, batch_upload_dir, voice, speed, enabled_servers, concurrency))
     thread.daemon = True
     thread.start()
     
@@ -278,6 +335,139 @@ def upload_files():
         'batch_directory': batch_dir,
         'total_files': len(valid_files)
     })
+
+def run_async_processing(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency):
+    """运行异步处理的主函数"""
+    try:
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # 运行异步处理
+        loop.run_until_complete(process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency))
+        
+    except Exception as e:
+        print(f"异步处理异常: {str(e)}", file=sys.stderr)
+    finally:
+        loop.close()
+
+async def process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency):
+    """异步处理文件，使用真正的并发"""
+    if batch_id not in batch_status:
+        return
+    
+    batch_info = batch_status[batch_id]
+    files_to_process = list(batch_info['files'].keys())
+    
+    # 调试日志：显示异步处理配置
+    print(f"🚀 开始异步处理:")
+    print(f"  📁 批次ID: {batch_id}")
+    print(f"  📄 文件数量: {len(files_to_process)}")
+    print(f"  🖥️ 可用服务器: {len(api_servers)}")
+    print(f"  ⚡ 并发度: {concurrency}")
+    
+    # 创建aiohttp会话
+    connector = aiohttp.TCPConnector(limit=concurrency * 2)  # 连接池限制
+    timeout = aiohttp.ClientTimeout(total=300)  # 5分钟总超时
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # 创建信号量来控制并发数
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        # 创建所有任务
+        tasks = []
+        for file_id in files_to_process:
+            task = process_single_file_async(session, semaphore, batch_id, batch_upload_dir, voice, speed, api_servers, file_id)
+            tasks.append(task)
+        
+        # 使用asyncio.gather同时执行所有任务
+        print(f"📤 同时提交 {len(tasks)} 个TTS请求...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 处理结果
+        success_count = 0
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"❌ 任务 {i+1} 异常: {result}")
+            elif result:
+                success_count += 1
+        
+        print(f"🎉 异步处理完成: {success_count}/{len(files_to_process)} 个文件成功")
+        print(f"📊 使用了 {len(api_servers)} 个服务器，并发度: {concurrency}")
+
+async def process_single_file_async(session, semaphore, batch_id, batch_upload_dir, voice, speed, api_servers, file_id):
+    """异步处理单个文件"""
+    async with semaphore:  # 控制并发数
+        try:
+            batch_info = batch_status[batch_id]
+            file_info = batch_info['files'][file_id]
+            filename = file_info['filename']
+            
+            # 更新文件状态
+            file_info['status'] = 'processing'
+            file_info['progress'] = 10
+            file_info['stage'] = '📖 读取文件...'
+            
+            # 读取完整的Markdown文件内容
+            md_path = os.path.join(batch_upload_dir, filename)
+            
+            with open(md_path, 'r', encoding='utf-8') as f:
+                full_text = f.read()
+            
+            file_info['progress'] = 20
+            file_info['stage'] = '📤 准备发送到TTS API...'
+            
+            # 生成MP3文件路径
+            mp3_filename = os.path.splitext(filename)[0] + '.mp3'
+            mp3_path = os.path.join(batch_upload_dir, mp3_filename)
+            
+            file_info['progress'] = 30
+            file_info['stage'] = '⏳ 等待TTS处理中...'
+            
+            # 负载均衡：轮询选择服务器
+            server_index = hash(file_id) % len(api_servers)  # 使用哈希确保一致性
+            selected_server = api_servers[server_index]
+            
+            server_name = selected_server.get('name', 'Unknown')
+            api_url = selected_server.get('url', '')
+            api_key = selected_server.get('apiKey', '')
+            
+            # 调试日志：显示服务器分配
+            print(f"🔄 文件 {filename} 分配给服务器: {server_name} ({api_url})")
+            
+            file_info['stage'] = f'⏳ 使用服务器 {server_name} 处理中...'
+            
+            # 异步调用TTS转换
+            success = await async_text_to_speech(session, full_text, mp3_path, voice, speed, api_url, api_key)
+            
+            if success:
+                file_info['progress'] = 90
+                file_info['stage'] = '💾 保存音频文件...'
+                
+                file_info['status'] = 'completed'
+                file_info['progress'] = 100
+                file_info['stage'] = '✅ 转换完成'
+                print(f"✅ {filename} 转换成功 (服务器: {server_name})")
+            else:
+                file_info['status'] = 'failed'
+                file_info['progress'] = 100
+                file_info['stage'] = f'❌ 转换失败 (服务器: {server_name})'
+                print(f"❌ {filename} 转换失败 (服务器: {server_name})")
+            
+            # 更新完成计数
+            batch_info['completed_files'] += 1
+            batch_info['current_file'] = batch_info['completed_files']
+            
+            return success
+            
+        except Exception as e:
+            file_info['status'] = 'failed'
+            file_info['progress'] = 100
+            file_info['stage'] = f'❌ 处理异常: {str(e)}'
+            print(f"❌ {filename} 处理异常: {str(e)}")
+            batch_info['completed_files'] += 1
+            batch_info['current_file'] = batch_info['completed_files']
+            return False
 
 def process_files_with_load_balancing(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency):
     """使用负载均衡和并发处理文件"""

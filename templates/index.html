@@ -637,7 +637,7 @@
                    enabledServers.length
                  } 个启用服务器<br>
                  <strong>并发度:</strong> ${concurrency} 个线程<br>
-                 <strong>处理模式:</strong> 负载均衡并发处理
+                 <strong>处理模式:</strong> 异步负载均衡并发处理
                `;
 
               // 开始轮询进度
@@ -683,7 +683,7 @@
                          enabledServers.length
                        } 个启用服务器<br>
                        <strong>并发度:</strong> ${concurrency} 个线程<br>
-                       <strong>处理模式:</strong> 负载均衡并发处理<br>
+                       <strong>处理模式:</strong> 异步负载均衡并发处理<br>
                        <strong>当前处理:</strong> 第 ${
                          progressData.current_file
                        }/${progressData.total_files} 个文件
