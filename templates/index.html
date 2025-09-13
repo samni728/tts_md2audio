@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>TTS转换工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <style>
+      .progress-bar {
+        transition: width 0.3s ease;
+      }
+
+      /* 模态框样式 */
+      .modal-backdrop {
+        backdrop-filter: blur(2px);
+      }
+
+      .modal-content {
+        animation: modalSlideIn 0.3s ease-out;
+      }
+
+      @keyframes modalSlideIn {
+        from {
+          opacity: 0;
+          transform: translateY(-20px) scale(0.95);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+      .batch-badge {
+        background-color: #eff6ff;
+        color: #1e40af;
+      }
+      /* 自定义滑块样式 */
+      input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        background: transparent;
+        cursor: pointer;
+      }
+      input[type="range"]::-webkit-slider-track {
+        background: #e5e7eb;
+        height: 8px;
+        border-radius: 4px;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        background: #3b82f6;
+        height: 20px;
+        width: 20px;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      input[type="range"]::-moz-range-track {
+        background: #e5e7eb;
+        height: 8px;
+        border-radius: 4px;
+        border: none;
+      }
+      input[type="range"]::-moz-range-thumb {
+        background: #3b82f6;
+        height: 20px;
+        width: 20px;
+        border-radius: 50%;
+        cursor: pointer;
+        border: none;
+      }
+      /* 选择框样式 */
+      select {
+        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+        background-position: right 0.5rem center;
+        background-repeat: no-repeat;
+        background-size: 1.5em 1.5em;
+        padding-right: 2.5rem;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50 min-h-screen p-6">
+    <div class="max-w-4xl mx-auto">
+      <h1 class="text-2xl font-bold text-blue-600 mb-4">Markdown批量转MP3</h1>
+
+      <!-- 功能说明 -->
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+        <h2 class="text-lg font-semibold text-blue-800 mb-2">
+          ✨ 智能文本处理
+        </h2>
+        <div class="text-sm text-blue-700 space-y-1">
+          <p>• 自动移除 Markdown 语法标记（**粗体**、*斜体*、`代码`等）</p>
+          <p>• 自动移除表情符号 😊🎉</p>
+          <p>• 自动移除 URL 链接</p>
+          <p>• 自动合并为单行文本，优化语音播放效果</p>
+        </div>
+      </div>
+
+      <!-- 上传区域 -->
+      <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+        <input
+          type="file"
+          id="file-input"
+          multiple
+          accept=".md"
+          class="hidden"
+        />
+        <div
+          class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center"
+        >
+          <svg
+            class="mx-auto h-12 w-12 text-gray-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+            />
+          </svg>
+          <p class="mt-2">拖放Markdown文件到此处或</p>
+          <button
+            id="select-files"
+            class="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            选择文件
+          </button>
+        </div>
+
+        <div class="mt-4">
+          <label class="block mb-2 font-medium">📁 自定义目录名称</label>
+          <input
+            type="text"
+            id="custom-directory"
+            placeholder="输入目录名称（可选，留空则自动生成）"
+            class="w-full p-2 border rounded"
+          />
+          <p class="text-xs text-gray-500 mt-1">
+            支持中文、英文、数字、下划线，不能包含特殊字符
+          </p>
+        </div>
+
+        <div class="mt-4">
+          <label class="block mb-2 font-medium">🎛️ 选择音色</label>
+          <select id="voice-model" class="w-full p-2 border rounded">
+            <option value="zh-CN-XiaoxiaoNeural">晓晓 (温柔女声)</option>
+            <option value="zh-CN-YunyangNeural">云扬 (专业男声)</option>
+            <option value="zh-CN-YunjianNeural">云健 (激情男声)</option>
+            <option value="zh-CN-XiaoyiNeural">晓伊 (活泼女声)</option>
+            <option value="zh-CN-YunxiNeural">云溪 (阳光男声)</option>
+            <option value="zh-CN-liaoning-XiaobeiNeural">
+              晓北 (东北女声)
+            </option>
+            <option value="zh-CN-YunfengNeural">云枫 (成熟男声)</option>
+            <option value="zh-CN-XiaochenNeural">晓辰 (清新女声)</option>
+            <option value="zh-CN-YunhaoNeural">云皓 (稳重男声)</option>
+            <option value="zh-CN-XiaohanNeural">晓涵 (知性女声)</option>
+          </select>
+        </div>
+
+        <div class="mt-4">
+          <label class="block mb-2 font-medium">🔗 TTS API 服务器管理</label>
+          <div class="border rounded p-3 bg-gray-50">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-sm font-medium">API 服务器列表</span>
+              <button
+                type="button"
+                id="add-api-btn"
+                class="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600"
+              >
+                + 添加服务器
+              </button>
+            </div>
+            <div id="api-servers-list" class="space-y-2">
+              <!-- API 服务器列表将在这里动态生成 -->
+            </div>
+            <div class="mt-3">
+              <label class="block text-sm font-medium mb-1">并发控制</label>
+              <div class="flex items-center space-x-4">
+                <input
+                  type="range"
+                  id="concurrency-slider"
+                  min="1"
+                  max="5"
+                  value="1"
+                  class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+                <span
+                  id="concurrency-value"
+                  class="text-sm font-medium text-gray-600 min-w-[2rem]"
+                  >1</span
+                >
+                <span class="text-xs text-gray-500">并发数</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <label class="block mb-2 font-medium">⚡ 语速调节</label>
+          <div class="flex items-center space-x-4">
+            <input
+              type="range"
+              id="speed-slider"
+              min="0.5"
+              max="2.0"
+              step="0.1"
+              value="1.0"
+              class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+            />
+            <span
+              id="speed-value"
+              class="text-sm font-medium text-gray-600 min-w-[3rem]"
+              >1.0x</span
+            >
+          </div>
+          <div class="flex justify-between text-xs text-gray-500 mt-1">
+            <span>0.5x</span>
+            <span>1.0x</span>
+            <span>2.0x</span>
+          </div>
+        </div>
+
+        <button
+          id="start-convert"
+          class="mt-4 w-full py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+          disabled
+        >
+          开始转换
+        </button>
+      </div>
+
+      <!-- 进度显示 -->
+      <div
+        id="progress-section"
+        class="hidden bg-white p-6 rounded-lg shadow-md"
+      >
+        <h2 class="text-xl font-semibold mb-4">转换进度</h2>
+        <div id="progress-container"></div>
+      </div>
+    </div>
+
+    <script>
+      // API 服务器管理
+      let apiServers = [];
+      let currentServerIndex = 0;
+
+      // 保存API服务器配置到localStorage
+      function saveApiServersToStorage() {
+        try {
+          localStorage.setItem("tts_api_servers", JSON.stringify(apiServers));
+          localStorage.setItem(
+            "tts_current_server_index",
+            currentServerIndex.toString()
+          );
+        } catch (error) {
+          console.error("保存API服务器配置失败:", error);
+        }
+      }
+
+      // 从localStorage加载API服务器配置
+      function loadApiServersFromStorage() {
+        try {
+          const savedServers = localStorage.getItem("tts_api_servers");
+          const savedIndex = localStorage.getItem("tts_current_server_index");
+
+          if (savedServers) {
+            apiServers = JSON.parse(savedServers);
+            currentServerIndex = savedIndex ? parseInt(savedIndex) : 0;
+
+            // 确保索引有效
+            if (currentServerIndex >= apiServers.length) {
+              currentServerIndex = 0;
+            }
+          } else {
+            // 如果没有保存的配置，使用默认配置
+            apiServers = [
+              {
+                id: "default",
+                name: "默认服务器",
+                url: "http://127.0.0.1:5050",
+                apiKey: "b77cf8cf852f4080bb56a4adcfc6a685",
+                enabled: true,
+              },
+            ];
+            currentServerIndex = 0;
+            saveApiServersToStorage(); // 保存默认配置
+          }
+        } catch (error) {
+          console.error("加载API服务器配置失败:", error);
+          // 出错时使用默认配置
+          apiServers = [
+            {
+              id: "default",
+              name: "默认服务器",
+              url: "http://127.0.0.1:5050",
+              apiKey: "b77cf8cf852f4080bb56a4adcfc6a685",
+              enabled: true,
+            },
+          ];
+          currentServerIndex = 0;
+        }
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        // 首先加载保存的配置
+        loadApiServersFromStorage();
+        const fileInput = document.getElementById("file-input");
+        const selectBtn = document.getElementById("select-files");
+        const convertBtn = document.getElementById("start-convert");
+        const progressSection = document.getElementById("progress-section");
+        const progressContainer = document.getElementById("progress-container");
+        const speedSlider = document.getElementById("speed-slider");
+        const speedValue = document.getElementById("speed-value");
+        const customDirectory = document.getElementById("custom-directory");
+        const addApiBtn = document.getElementById("add-api-btn");
+        const apiServersList = document.getElementById("api-servers-list");
+        const concurrencySlider = document.getElementById("concurrency-slider");
+        const concurrencyValue = document.getElementById("concurrency-value");
+
+        let currentFiles = [];
+
+        // 初始化 API 服务器列表
+        renderApiServers();
+
+        // 并发控制滑块
+        concurrencySlider.addEventListener("input", function () {
+          concurrencyValue.textContent = this.value;
+        });
+
+        // 添加 API 服务器
+        addApiBtn.addEventListener("click", function () {
+          showAddServerModal();
+        });
+
+        // 显示添加服务器模态框
+        function showAddServerModal() {
+          const modal = document.createElement("div");
+          modal.className =
+            "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 modal-backdrop";
+          modal.innerHTML = `
+            <div class="bg-white rounded-lg p-6 w-96 max-w-md mx-4 modal-content shadow-xl">
+              <h3 class="text-lg font-semibold mb-4 text-gray-800">添加 TTS 服务器</h3>
+              <form id="add-server-form">
+                <div class="mb-4">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">服务器名称</label>
+                  <input type="text" id="server-name" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如: 远程服务器" required>
+                </div>
+                <div class="mb-4">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">服务器地址</label>
+                  <input type="url" id="server-url" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="http://8.138.98.126:5050" required>
+                </div>
+                <div class="mb-6">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">API 密钥</label>
+                  <input type="password" id="server-key" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="输入 API 密钥" required>
+                </div>
+                <div class="flex justify-end space-x-3">
+                  <button type="button" id="cancel-btn" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">取消</button>
+                  <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">添加</button>
+                </div>
+              </form>
+            </div>
+          `;
+
+          document.body.appendChild(modal);
+
+          // 表单提交事件
+          document
+            .getElementById("add-server-form")
+            .addEventListener("submit", function (e) {
+              e.preventDefault();
+
+              const name = document.getElementById("server-name").value.trim();
+              const url = document.getElementById("server-url").value.trim();
+              const apiKey = document.getElementById("server-key").value.trim();
+
+              if (!name || !url || !apiKey) {
+                alert("请填写所有字段");
+                return;
+              }
+
+              const newServer = {
+                id: "server_" + Date.now(),
+                name: name,
+                url: url,
+                apiKey: apiKey,
+                enabled: true,
+              };
+
+              apiServers.push(newServer);
+              saveApiServersToStorage(); // 保存到localStorage
+              renderApiServers();
+              document.body.removeChild(modal);
+            });
+
+          // 取消按钮事件
+          document
+            .getElementById("cancel-btn")
+            .addEventListener("click", function () {
+              document.body.removeChild(modal);
+            });
+
+          // 点击背景关闭模态框
+          modal.addEventListener("click", function (e) {
+            if (e.target === modal) {
+              document.body.removeChild(modal);
+            }
+          });
+
+          // 聚焦到第一个输入框
+          document.getElementById("server-name").focus();
+
+          // ESC 键关闭模态框
+          const handleKeyDown = function (e) {
+            if (e.key === "Escape") {
+              document.body.removeChild(modal);
+              document.removeEventListener("keydown", handleKeyDown);
+            }
+          };
+          document.addEventListener("keydown", handleKeyDown);
+
+          // 清理事件监听器
+          const originalRemoveChild = modal.removeChild;
+          modal.removeChild = function () {
+            document.removeEventListener("keydown", handleKeyDown);
+            return originalRemoveChild.apply(this, arguments);
+          };
+        }
+
+        // 渲染 API 服务器列表
+        function renderApiServers() {
+          apiServersList.innerHTML = "";
+          apiServers.forEach((server, index) => {
+            const serverDiv = document.createElement("div");
+            serverDiv.className =
+              "flex items-center justify-between p-2 bg-white border rounded";
+            serverDiv.innerHTML = `
+              <div class="flex items-center space-x-2">
+                <span class="text-sm font-medium">${server.name}</span>
+                <span class="text-xs text-gray-500">${server.url}</span>
+                <span class="px-2 py-1 text-xs rounded ${
+                  server.enabled
+                    ? "bg-green-100 text-green-800"
+                    : "bg-gray-100 text-gray-600"
+                }">
+                  ${server.enabled ? "启用" : "禁用"}
+                </span>
+                ${
+                  server.enabled
+                    ? '<span class="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">负载均衡</span>'
+                    : ""
+                }
+              </div>
+              <div class="flex space-x-1">
+                <button onclick="toggleServer(${index})" class="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600">
+                  ${server.enabled ? "禁用" : "启用"}
+                </button>
+                <button onclick="removeServer(${index})" class="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600">
+                  删除
+                </button>
+              </div>
+            `;
+            apiServersList.appendChild(serverDiv);
+          });
+
+          // 显示负载均衡说明
+          const enabledCount = apiServers.filter(
+            (server) => server.enabled
+          ).length;
+          if (enabledCount > 1) {
+            const infoDiv = document.createElement("div");
+            infoDiv.className =
+              "mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700";
+            infoDiv.innerHTML = `💡 负载均衡模式：${enabledCount} 个启用的服务器将自动分配处理任务`;
+            apiServersList.appendChild(infoDiv);
+          }
+        }
+
+        // 注意：已移除单选按钮，现在使用负载均衡模式
+        // 所有启用的服务器都会参与负载均衡
+
+        // 切换服务器启用状态
+        window.toggleServer = function (index) {
+          apiServers[index].enabled = !apiServers[index].enabled;
+          saveApiServersToStorage(); // 保存到localStorage
+          renderApiServers();
+        };
+
+        // 删除服务器
+        window.removeServer = function (index) {
+          if (apiServers.length <= 1) {
+            alert("至少需要保留一个服务器");
+            return;
+          }
+          if (confirm("确定要删除这个服务器吗？")) {
+            apiServers.splice(index, 1);
+            if (currentServerIndex >= apiServers.length) {
+              currentServerIndex = 0;
+            }
+            saveApiServersToStorage(); // 保存到localStorage
+            renderApiServers();
+          }
+        };
+
+        // 获取当前活动服务器
+        function getCurrentServer() {
+          return apiServers[currentServerIndex];
+        }
+
+        // 语速滑块事件
+        speedSlider.addEventListener("input", (e) => {
+          speedValue.textContent = parseFloat(e.target.value).toFixed(1) + "x";
+        });
+
+        // 目录名称验证
+        function validateDirectoryName(name) {
+          if (!name || name.trim() === "") {
+            return { valid: true, name: "" }; // 空名称表示使用自动生成
+          }
+
+          // 移除前后空格
+          const cleanName = name.trim();
+
+          // 检查是否包含非法字符
+          const invalidChars = /[<>:"/\\|?*\x00-\x1f]/;
+          if (invalidChars.test(cleanName)) {
+            return {
+              valid: false,
+              error: '目录名称不能包含特殊字符: < > : " / \\ | ? * 等',
+            };
+          }
+
+          // 检查长度
+          if (cleanName.length > 50) {
+            return {
+              valid: false,
+              error: "目录名称不能超过50个字符",
+            };
+          }
+
+          return { valid: true, name: cleanName };
+        }
+
+        // 文件选择
+        selectBtn.addEventListener("click", () => fileInput.click());
+        fileInput.addEventListener("change", (e) => {
+          currentFiles = Array.from(e.target.files);
+          convertBtn.disabled = currentFiles.length === 0;
+        });
+
+        // 开始转换
+        convertBtn.addEventListener("click", async () => {
+          if (currentFiles.length === 0) return;
+
+          // 验证目录名称
+          const dirValidation = validateDirectoryName(customDirectory.value);
+          if (!dirValidation.valid) {
+            alert(dirValidation.error);
+            return;
+          }
+
+          const formData = new FormData();
+          currentFiles.forEach((file) => formData.append("files", file));
+          formData.append(
+            "voice",
+            document.getElementById("voice-model").value
+          );
+          formData.append(
+            "speed",
+            document.getElementById("speed-slider").value
+          );
+          formData.append("custom_directory", dirValidation.name);
+
+          // 添加 API 服务器信息
+          const enabledServers = apiServers.filter((server) => server.enabled);
+          formData.append("api_servers", JSON.stringify(enabledServers));
+          formData.append(
+            "concurrency",
+            document.getElementById("concurrency-slider").value
+          );
+
+          // 显示进度区域
+          progressSection.classList.remove("hidden");
+          progressContainer.innerHTML = `
+             <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+               <h3 class="text-lg font-semibold text-blue-800 mb-2">📁 批量处理信息</h3>
+               <p class="text-sm text-blue-700" id="batch-info">正在初始化批量处理...</p>
+             </div>
+             <div id="file-list" style="display: none;">
+               ${currentFiles
+                 .map(
+                   (file) => `
+                       <div class="mb-4 p-3 border rounded" id="progress-${file.name}">
+                           <div class="flex justify-between items-center mb-1">
+                               <span class="font-medium">${file.name}</span>
+                               <span class="text-lg" id="status-${file.name}">⏳</span>
+                           </div>
+                           <div class="text-xs text-blue-600 mt-1" id="api-details-${file.name}">等待处理</div>
+                       </div>
+                   `
+                 )
+                 .join("")}
+             </div>
+           `;
+
+          // 禁用转换按钮
+          convertBtn.disabled = true;
+          convertBtn.textContent = "转换中...";
+
+          let batchId = null;
+          let progressInterval = null;
+
+          try {
+            // 提交文件并等待响应
+            const response = await axios.post("/upload", formData);
+
+            if (response.data && response.data.batch_id) {
+              batchId = response.data.batch_id;
+              const batchDir = response.data.batch_directory;
+
+              // 更新批量信息
+              const isCustomDir = customDirectory.value.trim() !== "";
+              const enabledServers = apiServers.filter(
+                (server) => server.enabled
+              );
+              const concurrency =
+                document.getElementById("concurrency-slider").value;
+              document.getElementById("batch-info").innerHTML = `
+                 <strong>批次ID:</strong> ${batchId}<br>
+                 <strong>存储目录:</strong> ${batchDir}<br>
+                 <strong>目录类型:</strong> ${
+                   isCustomDir ? "自定义目录" : "自动生成"
+                 }<br>
+                 <strong>文件数量:</strong> ${currentFiles.length} 个文件<br>
+                 <strong>API服务器:</strong> ${
+                   enabledServers.length
+                 } 个启用服务器<br>
+                 <strong>并发度:</strong> ${concurrency} 个线程<br>
+                 <strong>处理模式:</strong> 负载均衡并发处理
+               `;
+
+              // 开始轮询进度
+              progressInterval = setInterval(async () => {
+                try {
+                  const progressResponse = await axios.get(
+                    `/progress/${batchId}`
+                  );
+
+                  // 检查响应状态
+                  if (progressResponse.status === 404) {
+                    clearInterval(progressInterval);
+                    document.getElementById("batch-info").innerHTML += `
+                      <br><br>
+                      <div class="p-3 bg-yellow-50 border border-yellow-200 rounded">
+                        <strong>⚠️ 任务已中断</strong><br>
+                        服务器重启导致任务状态丢失，请重新上传文件
+                      </div>
+                    `;
+                    return;
+                  }
+
+                  const progressData = progressResponse.data;
+
+                  // 更新当前处理文件信息
+                  if (progressData.current_file > 0) {
+                    const isCustomDir = customDirectory.value.trim() !== "";
+                    const enabledServers = apiServers.filter(
+                      (server) => server.enabled
+                    );
+                    const concurrency =
+                      document.getElementById("concurrency-slider").value;
+                    document.getElementById("batch-info").innerHTML = `
+                       <strong>批次ID:</strong> ${batchId}<br>
+                       <strong>存储目录:</strong> ${batchDir}<br>
+                       <strong>目录类型:</strong> ${
+                         isCustomDir ? "自定义目录" : "自动生成"
+                       }<br>
+                       <strong>文件数量:</strong> ${
+                         currentFiles.length
+                       } 个文件<br>
+                       <strong>API服务器:</strong> ${
+                         enabledServers.length
+                       } 个启用服务器<br>
+                       <strong>并发度:</strong> ${concurrency} 个线程<br>
+                       <strong>处理模式:</strong> 负载均衡并发处理<br>
+                       <strong>当前处理:</strong> 第 ${
+                         progressData.current_file
+                       }/${progressData.total_files} 个文件
+                     `;
+                  }
+
+                  // 更新每个文件的进度
+                  currentFiles.forEach((file) => {
+                    const fileId = `${batchId}_${file.name}`;
+                    const fileProgress = progressData.files[fileId];
+
+                    if (fileProgress) {
+                      const statusElement = document.getElementById(
+                        `status-${file.name}`
+                      );
+                      const apiDetails = document.getElementById(
+                        `api-details-${file.name}`
+                      );
+
+                      // 更新处理阶段信息
+                      if (fileProgress.stage) {
+                        apiDetails.textContent = fileProgress.stage;
+                      }
+
+                      // 更新状态图标
+                      if (fileProgress.status === "waiting") {
+                        statusElement.textContent = "⏳";
+                        if (!fileProgress.stage) {
+                          apiDetails.textContent = "等待处理";
+                        }
+                      } else if (fileProgress.status === "processing") {
+                        statusElement.textContent = "🔄";
+                        if (!fileProgress.stage) {
+                          apiDetails.textContent = "正在处理...";
+                        }
+                      } else if (fileProgress.status === "completed") {
+                        statusElement.textContent = "✅";
+                        apiDetails.textContent = "转换完成";
+                      } else if (fileProgress.status === "failed") {
+                        statusElement.textContent = "❌";
+                        apiDetails.textContent = "转换失败";
+                      }
+                    }
+                  });
+
+                  // 检查是否全部完成
+                  if (
+                    progressData.completed_files >= progressData.total_files
+                  ) {
+                    clearInterval(progressInterval);
+
+                    // 显示完成信息
+                    const successCount = Object.values(
+                      progressData.files
+                    ).filter((f) => f.status === "completed").length;
+                    const failCount = Object.values(progressData.files).filter(
+                      (f) => f.status === "failed"
+                    ).length;
+
+                    // 显示文件列表
+                    const fileList = document.getElementById("file-list");
+                    if (fileList) {
+                      fileList.style.display = "block";
+                    }
+
+                    document.getElementById("batch-info").innerHTML += `
+                       <br><br>
+                       <div class="p-3 bg-green-50 border border-green-200 rounded">
+                         <strong>✅ 批量处理完成!</strong><br>
+                         成功: ${successCount} 个文件<br>
+                         失败: ${failCount} 个文件
+                       </div>
+                     `;
+                  }
+                } catch (error) {
+                  console.error("获取进度失败:", error);
+
+                  // 如果是404错误，说明批次不存在
+                  if (error.response && error.response.status === 404) {
+                    clearInterval(progressInterval);
+                    document.getElementById("batch-info").innerHTML += `
+                      <br><br>
+                      <div class="p-3 bg-yellow-50 border border-yellow-200 rounded">
+                        <strong>⚠️ 任务已中断</strong><br>
+                        服务器重启导致任务状态丢失，请重新上传文件
+                      </div>
+                    `;
+                    return;
+                  }
+                }
+              }, 1000);
+            }
+          } catch (error) {
+            console.error("上传失败:", error);
+            // 显示错误状态
+            currentFiles.forEach((file) => {
+              const statusElement = document.getElementById(
+                `status-${file.name}`
+              );
+              const progressBar = document.querySelector(
+                `#progress-${file.name} .progress-bar`
+              );
+              const progressText = document.getElementById(
+                `progress-text-${file.name}`
+              );
+
+              statusElement.textContent = "转换失败";
+              progressBar.style.width = "100%";
+              progressBar.className =
+                "progress-bar bg-red-600 h-2.5 rounded-full transition-all duration-300";
+              progressText.textContent = "100%";
+            });
+
+            if (progressInterval) {
+              clearInterval(progressInterval);
+            }
+          } finally {
+            // 重新启用转换按钮
+            convertBtn.disabled = false;
+            convertBtn.textContent = "开始转换";
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
