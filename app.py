@@ -6,6 +6,7 @@ import time
 import json
 import asyncio
 import aiohttp
+import threading
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 import requests
 from werkzeug.utils import secure_filename
@@ -186,8 +187,21 @@ async def async_text_to_speech(session, text, output_path, voice="zh-CN-Xiaoxiao
     }
     
     try:
+        # 根据文本长度动态调整超时时间
+        text_length = len(text)
+        if text_length < 10000:  # 小于1万字符
+            timeout_seconds = 300  # 5分钟
+        elif text_length < 50000:  # 1-5万字符
+            timeout_seconds = 600  # 10分钟
+        elif text_length < 100000:  # 5-10万字符
+            timeout_seconds = 900  # 15分钟
+        else:  # 超过10万字符
+            timeout_seconds = 1200  # 20分钟
+        
+        print(f"📏 文本长度: {text_length:,} 字符，设置超时: {timeout_seconds}秒")
+        
         # 异步发送请求并获取响应
-        timeout = aiohttp.ClientTimeout(total=300)  # 5分钟超时
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         async with session.post(api_url, headers=headers, json=data, timeout=timeout) as response:
             if response.status == 200:
                 # 异步读取响应内容
@@ -203,10 +217,16 @@ async def async_text_to_speech(session, text, output_path, voice="zh-CN-Xiaoxiao
                 return False
                 
     except asyncio.TimeoutError:
-        print(f"TTS转换超时 ({api_url})", file=sys.stderr)
+        print(f"⏰ TTS转换超时 ({api_url}) - 文本长度: {len(text):,} 字符", file=sys.stderr)
+        return False
+    except aiohttp.ClientConnectorError as e:
+        print(f"🔌 连接错误 ({api_url}): {str(e)}", file=sys.stderr)
+        return False
+    except aiohttp.ClientError as e:
+        print(f"🌐 网络错误 ({api_url}): {str(e)}", file=sys.stderr)
         return False
     except Exception as e:
-        print(f"TTS转换失败 ({api_url}): {str(e)}", file=sys.stderr)
+        print(f"💥 TTS转换失败 ({api_url}): {str(e)}", file=sys.stderr)
         return False
 
 def text_to_speech(text, output_path, voice="zh-CN-XiaoxiaoNeural", speed=1.0, api_url=None, api_key=None):
@@ -304,7 +324,9 @@ def upload_files():
         'total_files': len(valid_files),
         'completed_files': 0,
         'current_file': 0,
-        'files': {}
+        'files': {},
+        'server_statuses': {},  # 添加服务器状态跟踪
+        'upload_dir': batch_upload_dir  # 保存上传目录路径
     }
     
     # 先保存所有文件并初始化状态
@@ -336,7 +358,7 @@ def upload_files():
         'total_files': len(valid_files)
     })
 
-def run_async_processing(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency):
+def run_async_processing(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency, specific_files=None):
     """运行异步处理的主函数"""
     try:
         # 创建新的事件循环
@@ -344,56 +366,443 @@ def run_async_processing(batch_id, batch_upload_dir, voice, speed, api_servers, 
         asyncio.set_event_loop(loop)
         
         # 运行异步处理
-        loop.run_until_complete(process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency))
+        loop.run_until_complete(process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency, specific_files))
         
     except Exception as e:
         print(f"异步处理异常: {str(e)}", file=sys.stderr)
     finally:
         loop.close()
 
-async def process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency):
-    """异步处理文件，使用真正的并发"""
+async def process_files_async(batch_id, batch_upload_dir, voice, speed, api_servers, concurrency, specific_files=None):
+    """异步处理文件，使用真正的动态负载均衡"""
     if batch_id not in batch_status:
         return
     
     batch_info = batch_status[batch_id]
-    files_to_process = list(batch_info['files'].keys())
+    
+    # 如果指定了特定文件，只处理这些文件；否则处理所有文件
+    if specific_files:
+        files_to_process = specific_files
+        print(f"🔄 重试模式: 只处理指定的 {len(files_to_process)} 个文件")
+    else:
+        files_to_process = list(batch_info['files'].keys())
+        print(f"🆕 全新处理: 处理所有 {len(files_to_process)} 个文件")
     
     # 调试日志：显示异步处理配置
-    print(f"🚀 开始异步处理:")
+    print(f"🚀 开始动态负载均衡处理:")
     print(f"  📁 批次ID: {batch_id}")
     print(f"  📄 文件数量: {len(files_to_process)}")
     print(f"  🖥️ 可用服务器: {len(api_servers)}")
     print(f"  ⚡ 并发度: {concurrency}")
     
-    # 创建aiohttp会话
-    connector = aiohttp.TCPConnector(limit=concurrency * 2)  # 连接池限制
-    timeout = aiohttp.ClientTimeout(total=300)  # 5分钟总超时
+    # 创建aiohttp会话，优化连接池设置
+    connector = aiohttp.TCPConnector(
+        limit=concurrency * 3,  # 总连接池限制
+        limit_per_host=concurrency * 2,  # 每个主机的连接限制
+        keepalive_timeout=60,  # 保持连接60秒
+        enable_cleanup_closed=True  # 自动清理关闭的连接
+    )
+    # 会话级别的超时设置更宽松，因为单个请求的超时由请求级别控制
+    timeout = aiohttp.ClientTimeout(total=1800)  # 30分钟总超时（会话级别）
     
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        # 创建信号量来控制并发数
-        semaphore = asyncio.Semaphore(concurrency)
+        # 创建任务队列和服务器状态跟踪
+        task_queue = asyncio.Queue()
+        server_stats = {i: {'active_tasks': 0, 'completed_tasks': 0, 'total_time': 0} for i in range(len(api_servers))}
         
-        # 创建所有任务
-        tasks = []
+        # 初始化服务器状态
+        for i in range(len(api_servers)):
+            batch_info['server_statuses'][i] = {
+                'name': api_servers[i]['name'],
+                'status': 'idle',
+                'load': 0,
+                'max_load': concurrency,
+                'completed_tasks': 0,
+                'total_time': 0
+            }
+        
+        # 将所有文件添加到队列
         for file_id in files_to_process:
-            task = process_single_file_async(session, semaphore, batch_id, batch_upload_dir, voice, speed, api_servers, file_id)
-            tasks.append(task)
+            await task_queue.put(file_id)
         
-        # 使用asyncio.gather同时执行所有任务
-        print(f"📤 同时提交 {len(tasks)} 个TTS请求...")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        print(f"📤 创建任务队列: {len(files_to_process)} 个文件")
         
-        # 处理结果
-        success_count = 0
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                print(f"❌ 任务 {i+1} 异常: {result}")
-            elif result:
-                success_count += 1
+        # 创建真正的动态负载均衡处理器
+        async def dynamic_load_balancer():
+            """真正的动态负载均衡处理器 - 任务完成即分配新任务，失败任务自动重试"""
+            start_time = time.time()
+            total_tasks = len(files_to_process)
+            completed_tasks = 0
+            failed_tasks = []
+            retry_queue = asyncio.Queue()  # 失败任务重试队列
+            
+            print(f"🚀 启动动态负载均衡器:")
+            print(f"  📊 总任务数: {total_tasks}")
+            print(f"  🖥️ 可用服务器: {len(api_servers)}")
+            print(f"  ⚡ 每服务器并发度: {concurrency}")
+            print(f"  🎯 理论最大并发: {len(api_servers) * concurrency}")
+            
+            # 创建任务完成回调函数
+            async def on_task_completed(file_id, server_id, success, processing_time):
+                nonlocal completed_tasks
+                
+                # 更新服务器统计
+                server_stats[server_id]['active_tasks'] -= 1
+                server_stats[server_id]['total_time'] += processing_time
+                
+                # 更新服务器状态
+                current_load = server_stats[server_id]['active_tasks']
+                batch_info['server_statuses'][server_id]['load'] = current_load
+                batch_info['server_statuses'][server_id]['total_time'] = server_stats[server_id]['total_time']
+                
+                if current_load == 0:
+                    batch_info['server_statuses'][server_id]['status'] = 'idle'
+                elif current_load >= concurrency:
+                    batch_info['server_statuses'][server_id]['status'] = 'full'
+                else:
+                    batch_info['server_statuses'][server_id]['status'] = 'busy'
+                
+                # 检查是否超时（超过5分钟认为超时）
+                if processing_time > 300:
+                    print(f"⏰ 任务超时检测: {file_id} 耗时 {processing_time:.2f}秒，可能存在问题")
+                
+                if success:
+                    server_stats[server_id]['completed_tasks'] += 1
+                    batch_info['server_statuses'][server_id]['completed_tasks'] = server_stats[server_id]['completed_tasks']
+                    completed_tasks += 1
+                    # 更新批次完成计数
+                    batch_info['completed_files'] = completed_tasks
+                    batch_info['current_file'] = completed_tasks
+                    print(f"✅ 任务完成: {file_id} (服务器: {api_servers[server_id]['name']}, 耗时: {processing_time:.2f}秒)")
+                else:
+                    # 任务失败，加入重试队列（包含失败服务器信息）
+                    failed_tasks.append(file_id)
+                    retry_info = {
+                        'file_id': file_id,
+                        'failed_server_id': server_id,
+                        'failed_server_name': api_servers[server_id]['name']
+                    }
+                    await retry_queue.put(retry_info)
+                    print(f"❌ 任务失败: {file_id} (服务器: {api_servers[server_id]['name']}, 耗时: {processing_time:.2f}秒) - 加入重试队列")
+                
+                # 立即尝试分配新任务给这个服务器
+                print(f"🎯 任务完成，检查服务器 {api_servers[server_id]['name']} 是否可以接收新任务 (当前负载: {current_load}/{concurrency})")
+                print(f"📊 队列状态: 主队列={task_queue.qsize()}, 重试队列={retry_queue.qsize()}, 已完成={completed_tasks}/{total_tasks}")
+                await assign_next_task(server_id)
+                
+                # 检查是否所有任务都已完成
+                if completed_tasks >= total_tasks:
+                    print(f"🎉 所有任务已完成！")
+                    return
+            
+            # 任务分配函数
+            async def assign_next_task(server_id):
+                """为指定服务器分配下一个任务"""
+                current_load = server_stats[server_id]['active_tasks']
+                server_name = api_servers[server_id]['name']
+                
+                print(f"🔍 检查服务器 {server_name} 任务分配 (当前负载: {current_load}/{concurrency})")
+                
+                if current_load >= concurrency:
+                    print(f"⚠️ 服务器 {server_name} 已满，跳过任务分配")
+                    return  # 服务器已满
+                
+                # 优先从重试队列获取失败的任务
+                file_id = None
+                if not retry_queue.empty():
+                    try:
+                        retry_info = retry_queue.get_nowait()
+                        file_id = retry_info['file_id']
+                        failed_server_id = retry_info['failed_server_id']
+                        failed_server_name = retry_info['failed_server_name']
+                        
+                        # 检查是否分配给不同的服务器
+                        if server_id != failed_server_id:
+                            print(f"🔄 重试任务: {file_id} → {server_name} (原失败服务器: {failed_server_name})")
+                        else:
+                            # 如果还是同一个服务器，放回队列等待其他服务器
+                            await retry_queue.put(retry_info)
+                            file_id = None
+                            print(f"⚠️ 跳过重试: {file_id} 避免分配给同一失败服务器 {failed_server_name}")
+                    except asyncio.QueueEmpty:
+                        pass
+                
+                # 如果重试队列为空，从主队列获取
+                if file_id is None and not task_queue.empty():
+                    try:
+                        file_id = task_queue.get_nowait()
+                        print(f"📤 新任务: {file_id} → {server_name}")
+                    except asyncio.QueueEmpty:
+                        print(f"📭 服务器 {server_name} 无任务可分配")
+                        return
+                
+                if file_id is not None:
+                    # 更新服务器状态
+                    server_stats[server_id]['active_tasks'] += 1
+                    current_load = server_stats[server_id]['active_tasks']
+                    batch_info['server_statuses'][server_id]['load'] = current_load
+                    
+                    if current_load >= concurrency:
+                        batch_info['server_statuses'][server_id]['status'] = 'full'
+                    else:
+                        batch_info['server_statuses'][server_id]['status'] = 'busy'
+                    
+                    server_name = api_servers[server_id]['name']
+                    print(f"🎯 动态分配: {file_id} → {server_name} (负载:{current_load}/{concurrency})")
+                    print(f"✅ 任务分配确认: {file_id} 已成功分配给 {server_name}")
+                    
+                    # 启动任务
+                    task = asyncio.create_task(
+                        process_single_file_with_callback(
+                            session, batch_id, batch_upload_dir, voice, speed, 
+                            api_servers, file_id, server_id, server_stats, concurrency,
+                            on_task_completed
+                        )
+                    )
+                else:
+                    # 没有任务可分配
+                    print(f"📭 服务器 {server_name} 无任务可分配 (重试队列: {retry_queue.qsize()}, 主队列: {task_queue.qsize()})")
+                    
+                    # 如果所有队列都为空，检查是否可以退出
+                    if task_queue.empty() and retry_queue.empty():
+                        active_tasks = sum(server_stats[i]['active_tasks'] for i in range(len(api_servers)))
+                        if active_tasks == 0:
+                            print(f"🎯 所有任务已完成，所有服务器空闲")
+                            return
+            
+            # 初始分配：为所有服务器分配初始任务
+            print(f"🚀 开始初始任务分配...")
+            for server_id in range(len(api_servers)):
+                for _ in range(min(concurrency, total_tasks)):
+                    await assign_next_task(server_id)
+                    if task_queue.empty():
+                        break
+                print(f"  📤 服务器 {api_servers[server_id]['name']} 初始分配完成，当前负载: {server_stats[server_id]['active_tasks']}")
+            
+            print(f"📊 初始分配完成，剩余队列任务: {task_queue.qsize()}")
+            
+            # 等待所有任务完成（事件驱动，无需轮询）
+            print(f"🎯 启动事件驱动负载均衡，等待任务完成...")
+            
+            # 创建任务完成等待器
+            async def wait_for_completion():
+                while completed_tasks < total_tasks:
+                    # 检查是否有活跃任务
+                    active_tasks = sum(server_stats[i]['active_tasks'] for i in range(len(api_servers)))
+                    if active_tasks == 0 and task_queue.empty() and retry_queue.empty():
+                        print(f"⚠️ 所有任务已完成但计数不匹配，强制退出")
+                        break
+                    await asyncio.sleep(0.5)  # 减少检查频率
+            
+            await wait_for_completion()
+            
+            total_time = time.time() - start_time
+            print(f"🎉 动态负载均衡处理完成 (总耗时: {total_time:.2f}秒)")
+            print(f"📊 最终统计: 完成 {completed_tasks}/{total_tasks} 个任务")
+            
+            # 输出详细的服务器统计信息
+            print(f"📊 服务器性能统计:")
+            for i, stats in server_stats.items():
+                server_name = api_servers[i]['name']
+                if stats['completed_tasks'] > 0:
+                    avg_time = stats['total_time'] / stats['completed_tasks']
+                    throughput = stats['completed_tasks'] / total_time if total_time > 0 else 0
+                    print(f"  🖥️ {server_name}:")
+                    print(f"    ✅ 完成任务: {stats['completed_tasks']} 个")
+                    print(f"    ⏱️ 平均耗时: {avg_time:.2f}秒/任务")
+                    print(f"    🚀 吞吐量: {throughput:.2f}任务/秒")
+                    print(f"    📈 效率评分: {1.0/max(avg_time, 0.1):.2f}")
+                else:
+                    print(f"  🖥️ {server_name}: 未处理任务")
+        
+        # 运行动态负载均衡处理器
+        await dynamic_load_balancer()
+        
+        # 统计最终结果
+        success_count = sum(1 for file_id in files_to_process 
+                           if batch_info['files'][file_id]['status'] == 'completed')
         
         print(f"🎉 异步处理完成: {success_count}/{len(files_to_process)} 个文件成功")
         print(f"📊 使用了 {len(api_servers)} 个服务器，并发度: {concurrency}")
+
+async def process_single_file_with_callback(session, batch_id, batch_upload_dir, voice, speed, api_servers, file_id, server_id, server_stats, concurrency, callback):
+    """异步处理单个文件，带回调机制"""
+    start_time = time.time()
+    
+    try:
+        batch_info = batch_status[batch_id]
+        file_info = batch_info['files'][file_id]
+        filename = file_info['filename']
+        selected_server = api_servers[server_id]
+        
+        # 更新文件状态
+        file_info['status'] = 'processing'
+        file_info['progress'] = 10
+        file_info['stage'] = '📖 读取文件...'
+        
+        # 读取完整的Markdown文件内容
+        md_path = os.path.join(batch_upload_dir, filename)
+        
+        with open(md_path, 'r', encoding='utf-8') as f:
+            full_text = f.read()
+        
+        file_info['progress'] = 20
+        file_info['stage'] = '📤 准备发送到TTS API...'
+        
+        # 生成MP3文件路径
+        mp3_filename = os.path.splitext(filename)[0] + '.mp3'
+        mp3_path = os.path.join(batch_upload_dir, mp3_filename)
+        
+        file_info['progress'] = 30
+        file_info['stage'] = f'🎵 正在转换 (服务器: {selected_server["name"]})...'
+        
+        # 调用异步TTS转换
+        api_key = selected_server.get('apiKey', selected_server.get('api_key', ''))
+        success = await async_text_to_speech(
+            session, full_text, mp3_path, voice, speed, 
+            selected_server['url'], api_key
+        )
+        
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        if success:
+            file_info['status'] = 'completed'
+            file_info['progress'] = 100
+            file_info['stage'] = '✅ 转换完成'
+            print(f"✅ {filename} 转换成功 (服务器: {selected_server['name']}, 耗时: {processing_time:.2f}秒)")
+        else:
+            file_info['status'] = 'failed'
+            file_info['progress'] = 100
+            file_info['stage'] = f'❌ 转换失败 (服务器: {selected_server["name"]})'
+            print(f"❌ {filename} 转换失败 (服务器: {selected_server['name']}, 耗时: {processing_time:.2f}秒)")
+        
+        # 调用回调函数
+        await callback(file_id, server_id, success, processing_time)
+        return success
+            
+    except Exception as e:
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        print(f"💥 处理文件 {file_id} 时出错: {str(e)}", file=sys.stderr)
+        if batch_id in batch_status:
+            batch_info = batch_status[batch_id]
+            if file_id in batch_info['files']:
+                file_info = batch_info['files'][file_id]
+                file_info['status'] = 'failed'
+                file_info['progress'] = 100
+                file_info['stage'] = f'💥 处理异常: {str(e)}'
+        
+        # 调用回调函数
+        await callback(file_id, server_id, False, processing_time)
+        return False
+
+async def process_single_file_with_server_tracking(session, batch_id, batch_upload_dir, voice, speed, api_servers, file_id, server_id, server_stats, concurrency):
+    """异步处理单个文件，带服务器状态跟踪"""
+    start_time = time.time()
+    
+    try:
+        batch_info = batch_status[batch_id]
+        file_info = batch_info['files'][file_id]
+        filename = file_info['filename']
+        selected_server = api_servers[server_id]
+        
+        # 更新文件状态
+        file_info['status'] = 'processing'
+        file_info['progress'] = 10
+        file_info['stage'] = '📖 读取文件...'
+        
+        # 读取完整的Markdown文件内容
+        md_path = os.path.join(batch_upload_dir, filename)
+        
+        with open(md_path, 'r', encoding='utf-8') as f:
+            full_text = f.read()
+        
+        file_info['progress'] = 20
+        file_info['stage'] = '📤 准备发送到TTS API...'
+        
+        # 生成MP3文件路径
+        mp3_filename = os.path.splitext(filename)[0] + '.mp3'
+        mp3_path = os.path.join(batch_upload_dir, mp3_filename)
+        
+        file_info['progress'] = 30
+        file_info['stage'] = f'🎵 正在转换 (服务器: {selected_server["name"]})...'
+        
+        # 调用异步TTS转换
+        api_key = selected_server.get('apiKey', selected_server.get('api_key', ''))
+        success = await async_text_to_speech(
+            session, full_text, mp3_path, voice, speed, 
+            selected_server['url'], api_key
+        )
+        
+        # 更新服务器统计
+        end_time = time.time()
+        processing_time = end_time - start_time
+        server_stats[server_id]['active_tasks'] -= 1
+        server_stats[server_id]['completed_tasks'] += 1
+        server_stats[server_id]['total_time'] += processing_time
+        
+        # 更新服务器状态
+        if batch_id in batch_status:
+            batch_info = batch_status[batch_id]
+            current_load = server_stats[server_id]['active_tasks']
+            batch_info['server_statuses'][server_id]['load'] = current_load
+            batch_info['server_statuses'][server_id]['completed_tasks'] = server_stats[server_id]['completed_tasks']
+            batch_info['server_statuses'][server_id]['total_time'] = server_stats[server_id]['total_time']
+            
+            if current_load == 0:
+                batch_info['server_statuses'][server_id]['status'] = 'idle'
+            elif current_load >= concurrency:
+                batch_info['server_statuses'][server_id]['status'] = 'full'
+            else:
+                batch_info['server_statuses'][server_id]['status'] = 'busy'
+        
+        if success:
+            file_info['status'] = 'completed'
+            file_info['progress'] = 100
+            file_info['stage'] = '✅ 转换完成'
+            print(f"✅ {filename} 转换成功 (服务器: {selected_server['name']}, 耗时: {processing_time:.2f}秒)")
+            return True
+        else:
+            file_info['status'] = 'failed'
+            file_info['progress'] = 100
+            file_info['stage'] = f'❌ 转换失败 (服务器: {selected_server["name"]})'
+            print(f"❌ {filename} 转换失败 (服务器: {selected_server['name']}, 耗时: {processing_time:.2f}秒)")
+            return False
+            
+    except Exception as e:
+        # 更新服务器统计
+        end_time = time.time()
+        processing_time = end_time - start_time
+        server_stats[server_id]['active_tasks'] -= 1
+        server_stats[server_id]['completed_tasks'] += 1
+        server_stats[server_id]['total_time'] += processing_time
+        
+        # 更新服务器状态
+        if batch_id in batch_status:
+            batch_info = batch_status[batch_id]
+            current_load = server_stats[server_id]['active_tasks']
+            batch_info['server_statuses'][server_id]['load'] = current_load
+            batch_info['server_statuses'][server_id]['completed_tasks'] = server_stats[server_id]['completed_tasks']
+            batch_info['server_statuses'][server_id]['total_time'] = server_stats[server_id]['total_time']
+            
+            if current_load == 0:
+                batch_info['server_statuses'][server_id]['status'] = 'idle'
+            elif current_load >= concurrency:
+                batch_info['server_statuses'][server_id]['status'] = 'full'
+            else:
+                batch_info['server_statuses'][server_id]['status'] = 'busy'
+        
+        print(f"💥 处理文件 {file_id} 时出错: {str(e)}", file=sys.stderr)
+        if batch_id in batch_status:
+            batch_info = batch_status[batch_id]
+            if file_id in batch_info['files']:
+                file_info = batch_info['files'][file_id]
+                file_info['status'] = 'failed'
+                file_info['progress'] = 100
+                file_info['stage'] = f'💥 处理异常: {str(e)}'
+        return False
 
 async def process_single_file_async(session, semaphore, batch_id, batch_upload_dir, voice, speed, api_servers, file_id):
     """异步处理单个文件"""
@@ -601,5 +1010,96 @@ def get_progress(batch_id):
         'files': status['files']
     })
 
+@app.route('/server_status/<batch_id>')
+def get_server_status(batch_id):
+    """获取服务器状态信息"""
+    if batch_id not in batch_status:
+        return jsonify({'error': '批次不存在'}), 404
+    
+    # 从batch_status中获取服务器状态信息
+    status = batch_status[batch_id]
+    server_statuses = status.get('server_statuses', {})
+    
+    return jsonify({
+        'batch_id': batch_id,
+        'server_statuses': server_statuses,
+        'timestamp': time.time()
+    })
+
+@app.route('/retry_failed', methods=['POST'])
+def retry_failed_files():
+    """重试失败的文件"""
+    try:
+        batch_id = request.form.get('batch_id')
+        api_servers_json = request.form.get('api_servers')
+        concurrency = int(request.form.get('concurrency', 2))
+        voice = request.form.get('voice', 'zh-CN-XiaoxiaoNeural')
+        speed = float(request.form.get('speed', 1.0))
+        
+        if not batch_id or batch_id not in batch_status:
+            return jsonify({'error': '批次不存在'}), 404
+        
+        # 解析API服务器列表
+        try:
+            api_servers = json.loads(api_servers_json) if api_servers_json else []
+        except json.JSONDecodeError:
+            return jsonify({'error': 'API服务器配置格式错误'}), 400
+        
+        # 过滤启用的服务器
+        enabled_servers = [server for server in api_servers if server.get('enabled', False)]
+        if not enabled_servers:
+            return jsonify({'error': '没有启用的API服务器'}), 400
+        
+        batch_info = batch_status[batch_id]
+        
+        # 找出失败的文件
+        failed_files = []
+        for file_id, file_info in batch_info['files'].items():
+            if file_info['status'] == 'failed':
+                failed_files.append(file_id)
+        
+        if not failed_files:
+            return jsonify({'error': '没有失败的文件需要重试'}), 400
+        
+        print(f"🔄 开始重试失败文件:")
+        print(f"  📁 批次ID: {batch_id}")
+        print(f"  📄 失败文件数量: {len(failed_files)}")
+        print(f"  🖥️ 可用服务器: {len(enabled_servers)}")
+        print(f"  ⚡ 并发度: {concurrency}")
+        
+        # 重置失败文件的状态
+        for file_id in failed_files:
+            file_info = batch_info['files'][file_id]
+            file_info['status'] = 'pending'
+            file_info['progress'] = 0
+            file_info['stage'] = '⏳ 等待重试...'
+            file_info['error'] = None
+        
+        # 更新批次状态
+        batch_info['status'] = 'processing'
+        batch_info['completed_files'] = batch_info['total_files'] - len(failed_files)
+        batch_info['current_file'] = batch_info['completed_files']
+        
+        # 获取批次目录
+        batch_upload_dir = batch_info['upload_dir']
+        
+        # 启动异步重试处理
+        retry_thread = threading.Thread(
+            target=run_async_processing,
+            args=(batch_id, batch_upload_dir, voice, speed, enabled_servers, concurrency, failed_files)
+        )
+        retry_thread.daemon = True
+        retry_thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'开始重试 {len(failed_files)} 个失败文件',
+            'retry_files': len(failed_files)
+        })
+        
+    except Exception as e:
+        print(f"重试失败文件时出错: {str(e)}", file=sys.stderr)
+        return jsonify({'error': f'重试失败: {str(e)}'}), 500
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='127.0.0.1', port=5000, debug=True)
