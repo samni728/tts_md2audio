@@ -1,0 +1,30 @@
+services:
+  tts-converter:
+    build:
+      context: .
+      dockerfile: Dockerfile.china
+    container_name: tts-batch-converter
+    ports:
+      - "5000:5000"
+    volumes:
+      # 挂载上传目录，确保数据持久化
+      - ./uploads:/app/uploads
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tts-network
+
+networks:
+  tts-network:
+    driver: bridge
+
+volumes:
+  uploads:
