@@ -1,5 +1,5 @@
 # 使用腾讯云镜像的Python 3.11镜像（更稳定）
-FROM ccr.ccs.tencentyun.com/library/python:3.11-slim
+FROM python:3.11-slim
 
 # 设置工作目录
 WORKDIR /app
