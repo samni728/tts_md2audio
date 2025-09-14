@@ -13,13 +13,11 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MP3_FOLDER'] = 'mp3'
 app.config['ALLOWED_EXTENSIONS'] = {'md'}
 app.secret_key = 'super-secret-key'  # 生产环境请替换为随机字符串
 
 # 确保目录存在
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['MP3_FOLDER'], exist_ok=True)
 
 # 存储批量处理状态
 batch_status = {}
@@ -1102,4 +1100,14 @@ def retry_failed_files():
         return jsonify({'error': f'重试失败: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    # 支持Docker部署，监听所有接口
+    import os
+    host = os.environ.get('FLASK_HOST', '0.0.0.0')
+    port = int(os.environ.get('FLASK_PORT', 5000))
+    debug = os.environ.get('FLASK_ENV', 'development') == 'development'
+    
+    print(f"🚀 启动TTS批量转换服务...")
+    print(f"📍 监听地址: {host}:{port}")
+    print(f"🔧 调试模式: {debug}")
+    
+    app.run(host=host, port=port, debug=debug)

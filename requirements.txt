@@ -1,0 +1,5 @@
+Flask==2.3.3
+aiohttp==3.8.6
+requests==2.31.0
+Werkzeug==2.3.7
+asyncio
