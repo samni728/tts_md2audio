@@ -3,7 +3,7 @@ services:
     build: .
     container_name: tts-batch-converter
     ports:
-      - "5000:5000"
+      - "5055:5055"
     volumes:
       # 挂载上传目录，确保数据持久化
       - ./uploads:/app/uploads
@@ -12,7 +12,7 @@ services:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:5055/"]
       interval: 30s
       timeout: 10s
       retries: 3

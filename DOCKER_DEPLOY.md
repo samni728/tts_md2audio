@@ -31,7 +31,7 @@ docker build -t tts-converter .
 # 2. 运行容器
 docker run -d \
   --name tts-batch-converter \
-  -p 5000:5000 \
+  -p 5055:5055 \
   -v $(pwd)/uploads:/app/uploads \
   tts-converter
 
@@ -53,7 +53,7 @@ docker rm tts-batch-converter
 | 变量名       | 默认值       | 说明         |
 | ------------ | ------------ | ------------ |
 | `FLASK_HOST` | `0.0.0.0`    | 服务监听地址 |
-| `FLASK_PORT` | `5000`       | 服务端口     |
+| `FLASK_PORT` | `5055`       | 服务端口     |
 | `FLASK_ENV`  | `production` | 运行环境     |
 
 ### 数据卷挂载
@@ -77,8 +77,8 @@ tts_批量转化/
 
 部署成功后，通过以下地址访问：
 
-- **Web 界面**: http://localhost:5000
-- **健康检查**: http://localhost:5000/
+- **Web 界面**: http://localhost:5055
+- **健康检查**: http://localhost:5055/
 
 ## 🔍 故障排除
 
@@ -129,7 +129,7 @@ services:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+  test: ["CMD", "curl", "-f", "http://localhost:5055/"]
   interval: 30s
   timeout: 10s
   retries: 3

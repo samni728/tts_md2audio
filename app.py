@@ -7,7 +7,9 @@ import json
 import asyncio
 import aiohttp
 import threading
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+import zipfile
+import io
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
 import requests
 from werkzeug.utils import secure_filename
 
@@ -1099,11 +1101,110 @@ def retry_failed_files():
         print(f"重试失败文件时出错: {str(e)}", file=sys.stderr)
         return jsonify({'error': f'重试失败: {str(e)}'}), 500
 
+@app.route('/api/folders')
+def get_folders():
+    """获取uploads目录下的所有文件夹列表"""
+    try:
+        upload_dir = app.config['UPLOAD_FOLDER']
+        if not os.path.exists(upload_dir):
+            return jsonify({'folders': []})
+        
+        folders = []
+        for item in os.listdir(upload_dir):
+            item_path = os.path.join(upload_dir, item)
+            if os.path.isdir(item_path):
+                # 获取文件夹信息
+                files = os.listdir(item_path)
+                md_files = [f for f in files if f.endswith('.md')]
+                mp3_files = [f for f in files if f.endswith('.mp3')]
+                
+                # 获取文件夹创建时间
+                create_time = os.path.getctime(item_path)
+                
+                folders.append({
+                    'name': item,
+                    'path': item_path,
+                    'md_count': len(md_files),
+                    'mp3_count': len(mp3_files),
+                    'total_files': len(files),
+                    'create_time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(create_time))
+                })
+        
+        # 按创建时间倒序排列
+        folders.sort(key=lambda x: x['create_time'], reverse=True)
+        return jsonify({'folders': folders})
+    
+    except Exception as e:
+        return jsonify({'error': f'获取文件夹列表失败: {str(e)}'}), 500
+
+@app.route('/api/download/<folder_name>')
+def download_folder(folder_name):
+    """下载指定文件夹的ZIP包"""
+    try:
+        # 安全检查：防止路径遍历攻击
+        if '..' in folder_name or '/' in folder_name or '\\' in folder_name:
+            return jsonify({'error': '无效的文件夹名称'}), 400
+        
+        upload_dir = app.config['UPLOAD_FOLDER']
+        folder_path = os.path.join(upload_dir, folder_name)
+        
+        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+            return jsonify({'error': '文件夹不存在'}), 404
+        
+        # 创建内存中的ZIP文件
+        memory_file = io.BytesIO()
+        
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # 计算相对路径，保持文件夹结构
+                    arcname = os.path.relpath(file_path, folder_path)
+                    zipf.write(file_path, arcname)
+        
+        memory_file.seek(0)
+        
+        # 生成下载文件名
+        download_filename = f"{folder_name}.zip"
+        
+        return send_file(
+            memory_file,
+            as_attachment=True,
+            download_name=download_filename,
+            mimetype='application/zip'
+        )
+    
+    except Exception as e:
+        return jsonify({'error': f'下载失败: {str(e)}'}), 500
+
+@app.route('/api/delete/<folder_name>', methods=['DELETE'])
+def delete_folder(folder_name):
+    """删除指定文件夹"""
+    try:
+        # 安全检查：防止路径遍历攻击
+        if '..' in folder_name or '/' in folder_name or '\\' in folder_name:
+            return jsonify({'error': '无效的文件夹名称'}), 400
+        
+        upload_dir = app.config['UPLOAD_FOLDER']
+        folder_path = os.path.join(upload_dir, folder_name)
+        
+        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+            return jsonify({'error': '文件夹不存在'}), 404
+        
+        # 删除文件夹及其内容
+        import shutil
+        shutil.rmtree(folder_path)
+        
+        return jsonify({'message': f'文件夹 {folder_name} 删除成功'})
+    
+    except Exception as e:
+        return jsonify({'error': f'删除失败: {str(e)}'}), 500
+
 if __name__ == '__main__':
     # 支持Docker部署，监听所有接口
     import os
     host = os.environ.get('FLASK_HOST', '0.0.0.0')
-    port = int(os.environ.get('FLASK_PORT', 5000))
+    port = int(os.environ.get('FLASK_PORT', 5055))
     debug = os.environ.get('FLASK_ENV', 'development') == 'development'
     
     print(f"🚀 启动TTS批量转换服务...")
