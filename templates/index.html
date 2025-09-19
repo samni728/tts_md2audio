@@ -151,9 +151,63 @@
             <option value="zh-CN-YunhaoNeural">云皓 (稳重男声)</option>
             <option value="zh-CN-XiaohanNeural">晓涵 (知性女声)</option>
           </select>
+          <div class="mt-2">
+            <label class="block text-sm text-gray-600 mb-1">➕ 自定义音色</label>
+            <div
+              class="flex flex-col sm:flex-row sm:items-center sm:space-x-2 space-y-2 sm:space-y-0"
+            >
+              <input
+                type="text"
+                id="custom-voice-input"
+                placeholder="输入声音模型名称，例如 zh-CN-ExampleNeural"
+                class="w-full sm:flex-1 px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                id="add-custom-voice"
+                type="button"
+                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
+              >
+                保存音色
+              </button>
+            </div>
+            <p class="text-xs text-gray-500 mt-1">
+              支持保存多个自定义音色，便于快速切换
+            </p>
+            <div id="custom-voice-list" class="mt-2 space-y-2 text-sm"></div>
+          </div>
         </div>
 
-        <!-- 服务器状态监控 - 移到上面 -->
+        <!-- 负载均衡器状态监控 -->
+        <div class="mt-4">
+          <label class="block mb-2 font-medium">⚡ 负载均衡器状态</label>
+          <div
+            class="p-3 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center space-x-2">
+                <span class="text-lg">🚀</span>
+                <span class="font-medium text-blue-800">超简单负载均衡器</span>
+                <span
+                  class="px-2 py-1 text-xs bg-blue-200 text-blue-800 rounded"
+                  >已启用</span
+                >
+              </div>
+              <div class="text-xs text-blue-600">
+                <span id="balancer-mode">简化模式</span>
+              </div>
+            </div>
+            <div class="text-xs text-blue-700 space-y-1">
+              <div class="grid grid-cols-2 gap-2">
+                <div>• 任务派发：找到可用服务器 → 派发任务</div>
+                <div>• 超时监控：每个任务最多等待300秒</div>
+                <div>• 轮询检查：任务完成后释放服务器</div>
+                <div>• 服务器选择：优先使用未用过的服务器</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 服务器状态监控 -->
         <div class="mt-4">
           <label class="block mb-2 font-medium">🖥️ 服务器状态监控</label>
           <div
@@ -423,8 +477,18 @@
         const apiServersList = document.getElementById("api-servers-list");
         const concurrencySlider = document.getElementById("concurrency-slider");
         const concurrencyValue = document.getElementById("concurrency-value");
+        const voiceSelect = document.getElementById("voice-model");
+        const customVoiceInput = document.getElementById("custom-voice-input");
+        const addCustomVoiceBtn = document.getElementById("add-custom-voice");
+        const customVoiceList = document.getElementById("custom-voice-list");
+
+        const CUSTOM_VOICES_KEY = "tts_custom_voices";
+        const SELECTED_VOICE_KEY = "tts_selected_voice";
+        let customVoices = [];
 
         let currentFiles = [];
+
+        initCustomVoiceManagement();
 
         // 初始化 API 服务器列表
         renderApiServers();
@@ -440,6 +504,191 @@
 
         // 初始化文件夹管理功能
         initFolderManagement();
+
+        function initCustomVoiceManagement() {
+          loadCustomVoicesFromStorage();
+          renderCustomVoices();
+          restoreSelectedVoice();
+
+          if (addCustomVoiceBtn) {
+            addCustomVoiceBtn.addEventListener("click", handleAddCustomVoice);
+          }
+
+          if (customVoiceInput) {
+            customVoiceInput.addEventListener("keydown", (event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleAddCustomVoice();
+              }
+            });
+          }
+
+          if (voiceSelect) {
+            voiceSelect.addEventListener("change", () => {
+              localStorage.setItem(SELECTED_VOICE_KEY, voiceSelect.value);
+            });
+          }
+        }
+
+        function handleAddCustomVoice() {
+          if (!customVoiceInput) return;
+          const newVoice = customVoiceInput.value.trim();
+
+          if (!newVoice) {
+            alert("请输入要保存的声音模型名称");
+            return;
+          }
+
+          if (customVoices.includes(newVoice)) {
+            alert("该自定义音色已存在");
+            customVoiceInput.value = "";
+            return;
+          }
+
+          customVoices.push(newVoice);
+          saveCustomVoicesToStorage();
+          renderCustomVoices();
+
+          if (voiceSelect) {
+            voiceSelect.value = newVoice;
+            localStorage.setItem(SELECTED_VOICE_KEY, newVoice);
+          }
+
+          customVoiceInput.value = "";
+        }
+
+        function removeCustomVoice(voice) {
+          customVoices = customVoices.filter((item) => item !== voice);
+          saveCustomVoicesToStorage();
+          renderCustomVoices();
+          ensureValidVoiceSelection();
+        }
+
+        function ensureValidVoiceSelection() {
+          if (!voiceSelect) return;
+          const currentValue = voiceSelect.value;
+          const hasCurrent = Array.from(voiceSelect.options).some(
+            (option) => option.value === currentValue
+          );
+
+          if (!hasCurrent && voiceSelect.options.length > 0) {
+            voiceSelect.selectedIndex = 0;
+            localStorage.setItem(SELECTED_VOICE_KEY, voiceSelect.value);
+          }
+        }
+
+        function loadCustomVoicesFromStorage() {
+          try {
+            customVoices = [];
+            const savedVoices = localStorage.getItem(CUSTOM_VOICES_KEY);
+            if (savedVoices) {
+              const parsed = JSON.parse(savedVoices);
+              if (Array.isArray(parsed)) {
+                customVoices = Array.from(
+                  new Set(
+                    parsed
+                      .filter((item) => typeof item === "string")
+                      .map((item) => item.trim())
+                      .filter((item) => item)
+                  )
+                );
+              }
+            }
+          } catch (error) {
+            customVoices = [];
+          }
+        }
+
+        function saveCustomVoicesToStorage() {
+          try {
+            localStorage.setItem(CUSTOM_VOICES_KEY, JSON.stringify(customVoices));
+          } catch (error) {
+            console.error("保存自定义音色失败:", error);
+          }
+        }
+
+        function renderCustomVoices() {
+          renderCustomVoiceOptions();
+          renderCustomVoiceList();
+        }
+
+        function renderCustomVoiceOptions() {
+          if (!voiceSelect) return;
+          const existingGroup = voiceSelect.querySelector(
+            "optgroup[data-custom='true']"
+          );
+          if (existingGroup) {
+            existingGroup.remove();
+          }
+
+          if (customVoices.length === 0) {
+            return;
+          }
+
+          const group = document.createElement("optgroup");
+          group.label = "自定义音色";
+          group.dataset.custom = "true";
+
+          customVoices.forEach((voice) => {
+            const option = document.createElement("option");
+            option.value = voice;
+            option.textContent = voice;
+            group.appendChild(option);
+          });
+
+          voiceSelect.appendChild(group);
+        }
+
+        function renderCustomVoiceList() {
+          if (!customVoiceList) return;
+
+          customVoiceList.innerHTML = "";
+
+          if (customVoices.length === 0) {
+            const placeholder = document.createElement("div");
+            placeholder.className = "text-xs text-gray-400";
+            placeholder.textContent = "尚未保存自定义音色";
+            customVoiceList.appendChild(placeholder);
+            return;
+          }
+
+          customVoices.forEach((voice) => {
+            const wrapper = document.createElement("div");
+            wrapper.className =
+              "flex items-center justify-between px-3 py-2 border rounded bg-white";
+
+            const nameSpan = document.createElement("span");
+            nameSpan.className = "text-gray-700 break-all pr-2";
+            nameSpan.textContent = voice;
+
+            const deleteBtn = document.createElement("button");
+            deleteBtn.type = "button";
+            deleteBtn.className =
+              "text-xs text-red-600 hover:text-red-700 transition-colors";
+            deleteBtn.textContent = "删除";
+            deleteBtn.addEventListener("click", () => removeCustomVoice(voice));
+
+            wrapper.appendChild(nameSpan);
+            wrapper.appendChild(deleteBtn);
+            customVoiceList.appendChild(wrapper);
+          });
+        }
+
+        function restoreSelectedVoice() {
+          if (!voiceSelect) return;
+          const savedVoice = localStorage.getItem(SELECTED_VOICE_KEY);
+          if (!savedVoice) {
+            return;
+          }
+
+          const hasSaved = Array.from(voiceSelect.options).some(
+            (option) => option.value === savedVoice
+          );
+
+          if (hasSaved) {
+            voiceSelect.value = savedVoice;
+          }
+        }
 
         // 任务日志功能
         function initTaskLogging() {
@@ -510,11 +759,16 @@
                     break;
                 }
 
+                const completed = server.completed_tasks ?? 0;
+                const failed = server.failed_tasks ?? 0;
+                const timeout = server.timeout_tasks ?? 0;
                 serverDiv.innerHTML = `
                   <div class="font-medium truncate text-xs">${server.name}</div>
                   <div class="${statusColor} text-xs">${statusIcon} ${server.status}</div>
                   <div class="text-gray-500 text-xs">负载: ${server.load}/${server.max_load}</div>
-                  <div class="text-gray-500 text-xs">完成: ${server.completed_tasks}</div>
+                  <div class="text-gray-500 text-xs">完成: ${completed}</div>
+                  <div class="text-gray-500 text-xs">超时: ${timeout}</div>
+                  <div class="text-gray-500 text-xs">报错: ${failed}</div>
                 `;
                 serverMonitor.appendChild(serverDiv);
               });
@@ -1086,7 +1340,15 @@
 
               // 添加任务开始日志
               addTaskLog(
-                `🚀 开始批量处理 - ${currentFiles.length} 个文件，${enabledServers.length} 个服务器，并发度: ${concurrency}`,
+                `🚀 启动超简单负载均衡器 - ${currentFiles.length} 个文件，${enabledServers.length} 个服务器，并发度: ${concurrency}`,
+                "info"
+              );
+              addTaskLog(
+                `⚡ 负载均衡策略: 优先未用过的服务器 → 最久没用的服务器`,
+                "info"
+              );
+              addTaskLog(
+                `⏰ 超时设置: 每个任务最多等待300秒，超时自动重试`,
                 "info"
               );
 
@@ -1223,7 +1485,11 @@
                     progressData.completed_files >= progressData.total_files
                   ) {
                     clearInterval(progressInterval);
-                    addTaskLog("🎉 所有任务处理完成！", "success");
+                    addTaskLog("🎉 超简单负载均衡器处理完成！", "success");
+                    addTaskLog(
+                      `📊 最终统计: 完成 ${progressData.completed_files}/${progressData.total_files} 个任务`,
+                      "success"
+                    );
 
                     // 显示完成信息
                     const successCount = Object.values(
@@ -1253,9 +1519,13 @@
                     document.getElementById("batch-info").innerHTML += `
                        <br><br>
                        <div class="p-3 bg-green-50 border border-green-200 rounded">
-                         <strong>✅ 批量处理完成!</strong><br>
+                         <strong>✅ 超简单负载均衡器处理完成!</strong><br>
                          成功: ${successCount} 个文件<br>
-                         失败: ${failCount} 个文件
+                         失败: ${failCount} 个文件<br>
+                         <div class="mt-2 text-xs text-green-700">
+                           🚀 核心特性: 任务派发 → 300秒超时 → 轮询检查<br>
+                           ⚡ 服务器策略: 优先未用过的服务器，确保公平分配
+                         </div>
                          ${retryButton}
                        </div>
                      `;
@@ -1335,9 +1605,15 @@
 
         // 获取当前配置
         const enabledServers = apiServers.filter((server) => server.enabled);
-        const concurrency = document.getElementById("concurrency").value;
-        const voice = document.getElementById("voice").value;
-        const speed = document.getElementById("speed").value;
+        const concurrencyElement = document.getElementById("concurrency-slider");
+        const voiceElement = document.getElementById("voice-model");
+        const speedElement = document.getElementById("speed-slider");
+
+        const concurrency = concurrencyElement ? concurrencyElement.value : "1";
+        const voice = voiceElement
+          ? voiceElement.value
+          : "zh-CN-XiaoxiaoNeural";
+        const speed = speedElement ? speedElement.value : "1.0";
 
         // 准备表单数据
         const formData = new FormData();
@@ -1399,7 +1675,7 @@
                       <div class="p-3 bg-blue-50 border border-blue-200 rounded">
                           <strong>📁 批量处理信息</strong><br>
                           批次ID: ${data.batch_id}<br>
-                          当前处理: 第 ${data.current_file}/${data.total_files} 个文件<br>
+                          任务进度: ${data.completed_files}/${data.total_files} 个文件<br>
                           处理模式: 动态负载均衡并发处理
                       </div>
                   `;
@@ -1554,6 +1830,13 @@
                 </div>
                 <div class="flex space-x-2 ml-4">
                   <button 
+                    onclick="continueFolder('${folder.name}')"
+                    class="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
+                    title="继续未完成"
+                  >
+                    ▶️ 继续
+                  </button>
+                  <button 
                     onclick="downloadFolder('${folder.name}')"
                     class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
                     title="下载ZIP包"
@@ -1646,6 +1929,97 @@
         } catch (error) {
           console.error("删除失败:", error);
           alert(`删除失败: ${error.response?.data?.error || error.message}`);
+        }
+      }
+
+      async function continueFolder(folderName) {
+        try {
+          // 读取当前启用的服务器与参数
+          const enabledServers = apiServers.filter((s) => s.enabled);
+          const concurrency =
+            document.getElementById("concurrency-slider")?.value || 1;
+          const voice =
+            document.getElementById("voice-model")?.value ||
+            "zh-CN-XiaoxiaoNeural";
+          const speed = document.getElementById("speed-slider")?.value || 1.0;
+
+          const formData = new FormData();
+          formData.append("api_servers", JSON.stringify(enabledServers));
+          formData.append("concurrency", concurrency);
+          formData.append("voice", voice);
+          formData.append("speed", speed);
+
+          const btn = event.target;
+          const original = btn.textContent;
+          btn.textContent = "▶️ 处理中...";
+          btn.disabled = true;
+
+          const res = await axios.post(
+            `/api/continue/${encodeURIComponent(folderName)}`,
+            formData
+          );
+          if (res.data && res.data.success && res.data.batch_id) {
+            // 打开进度区域并开始轮询
+            const progressSection = document.getElementById("progress-section");
+            const progressContainer =
+              document.getElementById("progress-container");
+            progressSection.classList.remove("hidden");
+            progressContainer.innerHTML = `
+              <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <h3 class="text-lg font-semibold text-blue-800 mb-2">▶️ 继续未完成</h3>
+                <p class="text-sm text-blue-700">批次ID: ${res.data.batch_id}，需重试 ${res.data.retry_files} 个文件</p>
+              </div>
+            `;
+
+            // 轮询进度
+            let interval = setInterval(async () => {
+              try {
+                const p = await axios.get(`/progress/${res.data.batch_id}`);
+                if (p.data) {
+                  const completed = p.data.completed_files || 0;
+                  const total = p.data.total_files || 0;
+                  progressContainer.innerHTML = `
+                    <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                      <h3 class="text-lg font-semibold text-blue-800 mb-2">▶️ 继续未完成</h3>
+                      <p class="text-sm text-blue-700">进度: ${completed}/${total}</p>
+                    </div>
+                  `;
+
+                  // 并行获取服务器状态并渲染
+                  try {
+                    const s = await axios.get(
+                      `/server_status/${res.data.batch_id}`
+                    );
+                    if (
+                      s.data &&
+                      s.data.server_statuses &&
+                      window.updateServerMonitor
+                    ) {
+                      window.updateServerMonitor(s.data.server_statuses);
+                    }
+                  } catch (e) {
+                    // 忽略状态获取失败
+                  }
+                  if (completed >= total) {
+                    clearInterval(interval);
+                    btn.textContent = "▶️ 继续";
+                    btn.disabled = false;
+                  }
+                }
+              } catch (e) {}
+            }, 1000);
+          } else {
+            alert(res.data?.error || "继续处理启动失败");
+            btn.textContent = original;
+            btn.disabled = false;
+          }
+        } catch (error) {
+          alert(
+            `继续处理失败: ${error.response?.data?.error || error.message}`
+          );
+          const btn = event.target;
+          btn.textContent = "▶️ 继续";
+          btn.disabled = false;
         }
       }
     </script>
